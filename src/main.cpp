@@ -19,23 +19,18 @@
 
 #include <M5EPD.h>
 
-// Initialize the M5EPD object
-M5EPD_Canvas canvas(&M5.EPD);
+M5EPD_Canvas canvas(&M5.EPD);  // Create a canvas object tied to the display
 
 void setup() {
-  // Initialize M5EPD
   M5.begin();
-  M5.EPD.Clear(true);
-
-  // Set up the canvas
-  canvas.createCanvas(540, 960);
-  canvas.setTextSize(3);
-  canvas.drawString("Hello, M5Paper!", 10, 10);
-
-  // Push the canvas to the display
-  canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+  M5.EPD.SetRotation(1);        // Optional: set rotation to horizontal
+  canvas.createCanvas(540, 960); // Full screen resolution
+  canvas.setTextSize(3);        // Adjust text size
+  canvas.drawString("Hello, M5Paper!", 100, 100);
+  canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);  // GC16 = full grayscale refresh
 }
 
 void loop() {
-  // Nothing to do here for now
+  // Nothing yet
 }
+
