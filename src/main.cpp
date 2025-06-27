@@ -1,139 +1,206 @@
 #include <Arduino.h>
 #include <M5EPD.h>
 #include <WiFi.h>
-#include "wifi_manager.h"  // Include the WiFi manager header
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include "wifi_manager.h"
 
-// Define an enum for display rotation
-enum DisplayRotation {
-  ROTATION_VERTICAL = 0,
-  ROTATION_HORIZONTAL = 1
-};
+#define DEBUG_ESP_SSL
 
-// Define constants for canvas dimensions, text sizes, and update mode
+// Web App URL from your Google Apps Script deployment
+const char* calendarUrl = "https://script.google.com/macros/s/AKfycbyKx-l2S6gIDvvMzhOOGu-Hsarx-rtLdbjRACbiMJ_giWOVoNUCbOBgj18VFH7-BpBYSw/exec";
+
+// Root CA Certificate
+const char* rootCACertificate = 
+"-----BEGIN CERTIFICATE-----\n"
+"MIIDrzCCApegAwIBAgIQB9Dktt8F8t5z3e1z5XzjEjANBgkqhkiG9w0BAQsFADBh\n"
+"MQswCQYDVQQGEwJVUzETMBEGA1UEChMKR29vZ2xlIExMQzERMA8GA1UECxMIR29v\n"
+"Z2xlIENBMRcwFQYDVQQDEw5Hb29nbGUgUm9vdCBDQTAeFw0yMTAyMDIxMzI1MDBa\n"
+"Fw0zMTAyMDIxMzI1MDBaMGExCzAJBgNVBAYTAlVTMRMwEQYDVQQKEwpHb29nbGUg\n"
+"TExDMREwDwYDVQQLEwhHb29nbGUgQ0ExFzAVBgNVBAMTDkdvb2dsZSBSb290IENB\n"
+"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7dY3k5Z4z+2dhz3e1z5X\n"
+"zjEjANBgkqhkiG9w0BAQsFADBhMQswCQYDVQQGEwJVUzETMBEGA1UEChMKR29vZ2\n"
+"xlIExMQzERMA8GA1UECxMIR29vZ2xlIENBMRcwFQYDVQQDEw5Hb29nbGUgUm9vdC\n"
+"...\n"
+"-----END CERTIFICATE-----\n";
+
+// Display and layout constants
+enum DisplayRotation { ROTATION_VERTICAL = 0, ROTATION_HORIZONTAL = 1 };
 const int CANVAS_WIDTH = 540;
 const int CANVAS_HEIGHT = 960;
-const int TEXT_SIZE_SMALL = 1;   // Small text size
-const int TEXT_SIZE_MEDIUM = 2;  // Medium text size
-const int TEXT_SIZE_LARGE = 3;   // Large text size
-const int ORIGIN_X = 0;          // Canvas origin X-coordinate
-const int ORIGIN_Y = 0;          // Canvas origin Y-coordinate
-const m5epd_update_mode_t FULL_REFRESH_MODE = UPDATE_MODE_GC16;  // Full grayscale refresh mode
+const int TEXT_SIZE_SMALL = 1;
+const int TEXT_SIZE_MEDIUM = 2;
+const int TEXT_SIZE_LARGE = 3;
+const int ORIGIN_X = 0;
+const int ORIGIN_Y = 0;
+const m5epd_update_mode_t FULL_REFRESH_MODE = UPDATE_MODE_GC16;
 
-M5EPD_Canvas canvas(&M5.EPD);  // Create a canvas object tied to the display
+M5EPD_Canvas canvas(&M5.EPD);
 
-// Mock calendar event struct
+// Event struct
 struct CalendarEvent {
     String title;
-    String date;  // Add a date field (format: YYYY-MM-DD)
+    String date;  // format: DD/MM/YY
     int hour;
     int minute;
 };
 
-// Expanded fake event list with 25 items over a 3-month period
-CalendarEvent events[] = {
-    {"Team meeting (Sean)", "05/05/25", 9, 30},
-    {"Lunch with Anna (Luigina)", "05/05/25", 12, 15},  // Same day as "Team meeting"
-    {"Dentist appointment (Sean)", "07/05/25", 16, 0},
-    {"Project deadline (Sean)", "08/05/25", 10, 0},
-    {"Weekly review (Sean)", "10/05/25", 11, 0},
-    {"Gym session (Luigina)", "12/05/25", 18, 0},
-    {"Dinner with family (Sean)", "13/05/25", 19, 30},
-    {"Doctor's appointment (Luigina)", "15/05/25", 8, 15},
-    {"Client presentation (Sean)", "16/05/25", 13, 0},
-    {"Pick up groceries (Luigina)", "18/05/25", 17, 15},
-    {"Car service (Sean)", "01/06/25", 8, 0},
-    {"Birthday party (Luca)", "05/06/25", 20, 0},
-    {"Team outing (Sean)", "10/06/25", 18, 30},
-    {"Weekend hike (Luca)", "15/06/25", 7, 0},
-    {"Summer camp drop-off (Loris)", "01/07/25", 9, 0},
-    {"Family picnic (All)", "04/07/25", 12, 0},
-    {"Doctor's appointment (Luigina)", "07/07/25", 10, 30},
-    {"Project presentation (Sean)", "10/07/25", 14, 0},
-    {"Evening walk (Luigina)", "15/07/25", 18, 30},
-    {"School meeting (Loris)", "20/07/25", 16, 0},
-    {"Beach day (Family)", "25/07/25", 10, 0}
-};
-
+// Helper: Convert "DD/MM/YY" to weekday
 String getDayOfWeek(const String& date) {
-    // Extract day, month, and year from the date string
     int day = date.substring(0, 2).toInt();
     int month = date.substring(3, 5).toInt();
-    int year = date.substring(6, 8).toInt() + 2000;  // Convert YY to YYYY
+    int year = date.substring(6, 8).toInt() + 2000;
 
-    // Zeller's Congruence Algorithm to calculate the day of the week
     if (month < 3) {
         month += 12;
         year -= 1;
     }
     int k = year % 100;
     int j = year / 100;
-    int dayOfWeek = (day + (13 * (month + 1)) / 5 + k + (k / 4) + (j / 4) - (2 * j)) % 7;
+    int dayOfWeek = (day + (13 * (month + 1)) / 5 + k + (k / 4) + (j / 4) - 2 * j) % 7;
 
-    // Map the result to the corresponding day name
     String days[] = {"Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"};
-    return days[(dayOfWeek + 7) % 7];  // Ensure positive index
+    return days[(dayOfWeek + 7) % 7];
 }
 
 String getMonthName(const String& month) {
-    // Map numeric month values to month names
-    String months[] = {"January", "February", "March", "April", "May", "June", 
+    String months[] = {"January", "February", "March", "April", "May", "June",
                        "July", "August", "September", "October", "November", "December"};
-    int monthIndex = month.toInt() - 1;  // Convert to zero-based index
-    if (monthIndex >= 0 && monthIndex < 12) {
-        return months[monthIndex];
-    }
-    return "Unknown";  // Return "Unknown" for invalid input
+    int index = month.toInt() - 1;
+    return (index >= 0 && index < 12) ? months[index] : "Unknown";
 }
 
-void drawCalendar() {
+// Fetch and parse events from Google Apps Script
+std::vector<CalendarEvent> fetchCalendarEvents(const String& url) {
+    std::vector<CalendarEvent> result;
+
+    WiFiClientSecure client;
+    client.setCACert(rootCACertificate);  // Use the root CA certificate
+
+    HTTPClient http;
+    String currentUrl = url;
+    int redirectCount = 0;
+    const int maxRedirects = 5;  // Limit the number of redirects to prevent infinite loops
+
+    while (redirectCount < maxRedirects) {
+        http.begin(client, currentUrl);
+
+        // 👇 Spoof browser user-agent
+        http.setUserAgent("Mozilla/5.0 (ESP32 M5Stack)");
+
+        int httpCode = http.GET();
+        Serial.print("HTTP GET returned: ");
+        Serial.println(httpCode);
+
+        // Log all HTTP headers for debugging
+        Serial.println("HTTP Headers:");
+        for (int i = 0; i < http.headers(); i++) {
+            Serial.print(http.headerName(i));
+            Serial.print(": ");
+            Serial.println(http.header(i));
+        }
+
+        if (httpCode == 302) {
+            // Handle redirect
+            String redirectUrl = http.header("Location");
+            Serial.print("Redirecting to: ");
+            Serial.println(redirectUrl);
+
+            if (redirectUrl.isEmpty()) {
+                Serial.println("Redirect URL is empty. Aborting.");
+                break;
+            }
+
+            currentUrl = redirectUrl;  // Update the URL for the next request
+            redirectCount++;
+            http.end();  // Close the current connection before retrying
+        } else if (httpCode == 200) {
+            // Successfully fetched the data
+            String payload = http.getString();
+            Serial.println("Payload:");
+            Serial.println(payload);
+
+            StaticJsonDocument<4096> doc;
+            DeserializationError error = deserializeJson(doc, payload);
+            if (!error) {
+                for (JsonObject event : doc.as<JsonArray>()) {
+                    CalendarEvent ev;
+                    ev.title = event["title"].as<String>();
+                    String start = event["start"].as<String>();
+                    ev.date = start.substring(8, 10) + "/" +
+                              start.substring(5, 7) + "/" +
+                              start.substring(2, 4);
+                    ev.hour = start.substring(11, 13).toInt();
+                    ev.minute = start.substring(14, 16).toInt();
+                    result.push_back(ev);
+                }
+            } else {
+                Serial.println("Failed to parse JSON");
+            }
+            http.end();
+            return result;  // Exit the loop after successfully fetching data
+        } else {
+            Serial.println("HTTP request failed");
+            break;
+        }
+    }
+
+    if (redirectCount >= maxRedirects) {
+        Serial.println("Too many redirects. Aborting.");
+    }
+
+    http.end();
+    return result;
+}
+
+// Draw calendar using event list
+void drawCalendar(const std::vector<CalendarEvent>& events) {
     canvas.createCanvas(CANVAS_WIDTH, CANVAS_HEIGHT);
-    canvas.setTextSize(TEXT_SIZE_MEDIUM);  // Use medium text size for better fit
+    canvas.clear();
+    canvas.setTextSize(TEXT_SIZE_MEDIUM);
     canvas.setTextDatum(TL_DATUM);
     canvas.drawString("Upcoming Events", 20, 20);
-    canvas.drawLine(20, 60, 520, 60, 0, 1);  // Add a horizontal line for the header
+    canvas.drawLine(20, 60, 520, 60, 0, 1);
 
-    String currentMonth = "";  // Track the current month to group events
-    String currentDay = "";    // Track the current day to group events
+    // 🧪 No events? Show fallback message
+    if (events.empty()) {
+        canvas.setTextSize(TEXT_SIZE_MEDIUM);
+        canvas.drawString("No events found.", 20, 100);
+        canvas.pushCanvas(ORIGIN_X, ORIGIN_Y, FULL_REFRESH_MODE);
+        return;
+    }
+
+    String currentMonth = "";
+    String currentDay = "";
     int y = 80;
 
     for (const auto& event : events) {
-        // Extract the month and year from the date
         String eventMonth = event.date.substring(3, 5);
         String eventYear = event.date.substring(6, 8);
 
-        // Check if the event belongs to a new month
         if (eventMonth != currentMonth) {
             currentMonth = eventMonth;
-
-            // Add a subsection header for the new month with the year
-            canvas.setTextSize(TEXT_SIZE_LARGE);  // Larger text for month headers
-            canvas.drawString(getMonthName(currentMonth) + " '" + eventYear, 20, y);  // Display month and year
-            y += 30;  // Add spacing after the month header
-            canvas.setTextSize(TEXT_SIZE_MEDIUM);  // Reset to medium text size
+            canvas.setTextSize(TEXT_SIZE_LARGE);
+            canvas.drawString(getMonthName(currentMonth) + " '" + eventYear, 20, y);
+            y += 30;
+            canvas.setTextSize(TEXT_SIZE_MEDIUM);
         }
 
-        // Check if the event belongs to a new day
         if (event.date != currentDay) {
             currentDay = event.date;
-
-            // Extract the day only (remove month and year)
             String eventDay = currentDay.substring(0, 2);
-
-            // Add a subsection header for the new day with the day of the week
             String dayOfWeek = getDayOfWeek(currentDay);
-            canvas.setTextSize(TEXT_SIZE_LARGE);  // Larger text for day headers
+            canvas.setTextSize(TEXT_SIZE_LARGE);
             canvas.drawString("  " + eventDay + " - " + dayOfWeek, 20, y);
-            y += 30;  // Add spacing after the day header
-            canvas.setTextSize(TEXT_SIZE_MEDIUM);  // Reset to medium text size
+            y += 30;
+            canvas.setTextSize(TEXT_SIZE_MEDIUM);
         }
 
-        // Format and display the event time and title
         char timeStr[16];
         sprintf(timeStr, "%02d:%02d", event.hour, event.minute);
         canvas.drawString("    " + String(timeStr) + "  " + event.title, 40, y);
-        y += 25;  // Reduced line spacing for compact display
+        y += 25;
 
-        // Stop drawing if the content exceeds the screen height
         if (y > CANVAS_HEIGHT - 40) {
             break;
         }
@@ -142,16 +209,22 @@ void drawCalendar() {
     canvas.pushCanvas(ORIGIN_X, ORIGIN_Y, FULL_REFRESH_MODE);
 }
 
+// Main startup
 void setup() {
     M5.begin();
     Serial.begin(115200);
     M5.EPD.SetRotation(ROTATION_HORIZONTAL);
+    M5.EPD.Clear(true);  // Clear any ghosting
 
-    drawCalendar();
-    connectToWiFi(canvas);  // Call the function from wifi_manager.cpp
+    connectToWiFi(canvas);
+
+    std::vector<CalendarEvent> events = fetchCalendarEvents(calendarUrl);
+    Serial.print("Total parsed events: ");
+    Serial.println(events.size());
+
+    drawCalendar(events);
 }
 
 void loop() {
-    // For now, nothing
+    // Placeholder for future interaction or timed refresh
 }
-
